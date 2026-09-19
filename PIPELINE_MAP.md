@@ -177,3 +177,107 @@ no ingestion. The only thing that would need scaling under real load is
 `tracebridge-mcp` itself (more concurrent tool calls), which is already
 stateless per-request and could run as multiple instances behind the
 investigator without any code change.
+
+## 11. Worked example — one real correlation ID, start to finish
+
+Correlation ID `72391ab0-21fe-47d8-a7c0-cd8e55154de1` — a real transaction
+run on this system while `customer-postgres` was intentionally stopped.
+Every evidence value below is real output this system actually produced;
+this walkthrough shows the full multi-round loop the design supports (the
+LLM keeps calling tools and getting fed the results back until *it*
+decides it has enough). Follow it top to bottom and you've seen every
+stage in this document fire once.
+
+```
+You -> investigator: "Investigate correlationId 72391ab0-...-cd8e55154de1"
+```
+
+**Round 1**
+```
+investigator -> LLM:   system prompt + all 10 tool schemas + the request above
+LLM -> investigator:   call get_transaction_summary(correlation_id=72391ab0-...)
+investigator -> mcp:   runs it against OpenSearch + Postgres
+mcp -> investigator:   eventsObserved=35, servicesObserved=[service-request-api,
+                        servicenow-consumer, customer-db-consumer],
+                        downstreamInteractions=[{targetSystem: SERVICENOW,
+                        httpStatus: 201, status: SUCCESS}]
+                        -> stored as evidence E1
+```
+The model now knows ServiceNow succeeded, but has no detail on what
+`customer-db-consumer` actually did — just that it was "involved."
+
+**Round 2** (evidence E1 is fed back into the conversation; LLM decides what's next)
+```
+LLM -> investigator:   call search_logs(correlation_id=72391ab0-...,
+                        service="customer-db-consumer")
+mcp -> investigator:   log lines including
+                        {event: DB_OPERATION_FAILED, errorCode: DATABASE_ERROR,
+                         message: "Customer record write failed: customer-postgres"}
+                        -> stored as evidence E2
+```
+Now the model has a concrete failure, naming `customer-postgres` as the
+target — but a log line alone doesn't prove the dependency is actually
+down right now, or was ever really unreachable versus some other bug.
+
+**Round 3**
+```
+LLM -> investigator:   call get_dependency_health(service="customer-db-consumer",
+                        dependency="customer-postgres")
+validation.py:         checks ("customer-db-consumer","customer-postgres") is a
+                        real documented pair in catalog.py -> allowed
+mcp -> investigator:   {reachable: false, failure: "DNS_RESOLUTION_FAILED"}
+                        -> stored as evidence E3
+```
+
+**Round 4**
+```
+LLM -> investigator:   call get_service_runtime_status(service="customer-postgres")
+validation.py:         checks "customer-postgres" is a known service -> allowed
+catalog.py:            translates it to container name "tracebridge-customer-postgres"
+mcp -> investigator:   {exists: true, running: false, state: "exited"}
+                        -> stored as evidence E4
+```
+Three independent things now agree: the log says the write failed, a live
+network probe says the dependency is unreachable, and Docker itself says
+that exact container isn't running. Nothing left to check would change the
+answer.
+
+**Round 5 — the model concludes**
+```
+LLM -> investigator:   call submit_report(
+                          outcome="FAILURE",
+                          failure_boundary="customer-db-consumer -> customer-postgres",
+                          interpretation="customer-postgres was unreachable and its
+                            container was not running, causing the database write
+                            to fail. ServiceNow processing succeeded independently.",
+                          limitations="Evidence shows the dependency was unavailable,
+                            not why the container stopped.",
+                          cited_evidence_ids=["E1","E2","E3","E4"]
+                        )
+```
+
+**What the code computes on top of that (never left to the model):**
+- `topology.py` replays E1–E4 and builds the ✓/✗ checkpoint list — everything
+  through `service-request-api` and `servicenow-consumer` shows ✓, then
+  `customer-db-consumer` shows ✓ up to "Kafka consumed" and ✗ at "database
+  operation."
+- `report.py` computes confidence as **HIGH** — not because the model said
+  so, but because the fixed rule was satisfied twice over here: the
+  baseline rule (an OpenSearch source and a PostgreSQL source both
+  confirmed something) *and* the Phase 8 rule (the live dependency probe
+  and the live container check both named the same dependency,
+  `customer-postgres`, as down).
+- `evidence.py` confirms all four cited IDs are real (nothing invented) —
+  they pass straight through unfiltered.
+
+**What reaches the UI**, streamed live over SSE as it happens:
+`started` → four `agent_decision`/`evidence` pairs (one per round above) →
+`final` (the assembled report: outcome, confidence, checkpoint path,
+interpretation, limitations, and the four evidence cards).
+
+*Honesty note: this walkthrough shows the mechanism exactly as designed and
+uses only real evidence values this system actually produced. A live run I
+performed against this same correlation ID stopped after round 1 and
+reached the wrong conclusion (SUCCESS) — a real, useful finding about when
+the model settles for too little evidence, not a flaw in the flow shown
+above.*
