@@ -57,6 +57,28 @@ One MCP server, ten tools, each hitting exactly one store above:
   any real query runs).
 - `tracebridge_mcp/validation.py` — checks every tool's input (real UUID?
   known service name? sane limit?) before it ever reaches a query.
+
+  **How a runtime tool call actually gets checked, step by step** (e.g. the
+  LLM asks for `service="customer-postgres"`):
+  1. `validation.py` → `validate_runtime_service()` — is `"customer-postgres"`
+     one of the names `catalog.py` knows about at all? This checks the
+     *plain-English service name* the LLM typed — not a real Docker
+     container name, not a hostname. Unknown name → rejected immediately,
+     nothing else runs.
+  2. Only if it passed: `catalog.py` translates that name into the real
+     Docker container name (`"tracebridge-customer-postgres"`) — this
+     mapping is the only thing standing between "a name the LLM said" and
+     "a real thing on the machine."
+  3. *Now*, and only now, does the tool actually ask Docker about that
+     container, or open a real network connection to it.
+
+  Same two-step idea for `get_dependency_health`: `validate_dependency()`
+  first checks that the exact `(service, dependency)` pair is one
+  `catalog.py` explicitly lists as a real relationship (e.g.
+  `customer-db-consumer` → `customer-postgres`) — a service asking about a
+  dependency it doesn't actually have, or a made-up host, is rejected
+  before any socket is opened. This is what stops the tool from becoming a
+  generic "probe any address" function.
 - `tracebridge_mcp/normalize.py` — reshapes raw database/log rows into a
   consistent, predictable output shape.
 
