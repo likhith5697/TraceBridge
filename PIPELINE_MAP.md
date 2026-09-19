@@ -151,6 +151,45 @@ evidence proves" rule.
 - **Secret safety**: `get_service_config_metadata` never performs I/O at
   all — it returns a hardcoded dict, so no real credential can ever pass
   through it.
+- **The Outbox Pattern (producer side)**: `service-request-api` used to
+  save the request to Postgres, then call Kafka directly - if that Kafka
+  call failed, the failure was logged and swallowed, and the API still
+  returned success. The event was gone forever, with no trace it ever
+  existed. Now: `ServiceRequestService.createServiceRequest()` is
+  `@Transactional` and writes *two* rows in one commit - the business row
+  and an `outbox_event` row (`OutboxEventService.enqueue()`, see
+  `V2__create_outbox_event_table.sql`). A separate poller,
+  `OutboxPublisher.publishPendingEvents()` (a `@Scheduled` method, default
+  every 1s), is the *only* thing that ever calls Kafka on the producer
+  side - it reads unsent rows, publishes them, and marks `sent = true`
+  only once Kafka confirms receipt. If Kafka is down, the row just stays
+  unsent and gets retried next cycle - never lost, at worst delayed.
+
+  **Two real bugs found only by live-testing this, not by unit tests
+  alone:**
+  1. Kafka's producer `send()` can itself block for `max.block.ms`
+     (default 60000ms) fetching topic metadata *before it even returns a
+     Future* - a plain `Future.get(5, SECONDS)` timeout does nothing
+     against this, since the blocking happens earlier than that call.
+     Fixed by setting `max.block.ms=5000`, matching the poller's own fast
+     retry cadence.
+  2. When that block *does* time out, Kafka throws its own **unchecked**
+     `org.apache.kafka.common.errors.TimeoutException` directly out of
+     `send()` - a different class from `java.util.concurrent.TimeoutException`
+     despite the identical name. The original narrow catch missed it
+     entirely: the exception escaped into Spring's `@Scheduled` machinery,
+     which silently swallowed it via its default error handler *and
+     aborted every remaining row in that poll cycle's batch*. Fixed by
+     catching broadly (`catch (Exception e)`) in `OutboxPublisher.publishOne()`
+     - the same lesson as `CannotCreateTransactionException` in Phase 8:
+     third-party client exception hierarchies are easy to under-catch, and
+     real testing keeps finding the gaps a mock never would.
+
+  Verified live: stopped Kafka entirely, submitted a request (saved
+  instantly, no timeout felt by the caller), confirmed the row stayed
+  `sent = false` and retried automatically, restarted Kafka, and watched
+  the same row publish itself and flow through both consumers with zero
+  manual intervention.
 - **Idempotency**: Kafka only promises *at-least-once* delivery — a crash
   right before an offset commits, a rebalance, or a manual offset reset can
   redeliver the same message. Without a guard, that would call the real

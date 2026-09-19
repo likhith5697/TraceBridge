@@ -97,6 +97,34 @@ class OutboxPublisherTest {
     }
 
     @Test
+    void kafkasOwnUncheckedTimeoutExceptionIsCaughtNotJustJavaUtilConcurrentsVersion() throws Exception {
+        // This is the exception a real Kafka outage actually produces: found
+        // live, send() itself throws org.apache.kafka.common.errors.TimeoutException
+        // (unchecked) when it can't fetch topic metadata in time - a
+        // completely different class from java.util.concurrent.TimeoutException
+        // despite the identical name. A narrower catch here let it escape into
+        // Spring's scheduler uncaught, which silently swallowed it AND aborted
+        // every remaining row in that poll cycle - see OutboxPublisher.
+        OutboxEvent willFail = pendingEvent();
+        OutboxEvent willSucceed = pendingEvent();
+        when(repository.findBySentFalseOrderByCreatedAtAsc(any(Pageable.class)))
+                .thenReturn(List.of(willFail, willSucceed));
+        when(eventPublisher.publish(anyString(), eq(willFail.getCorrelationId().toString()), anyString()))
+                .thenThrow(new org.apache.kafka.common.errors.TimeoutException(
+                        "Topic servicenow.service-request not present in metadata after 60000 ms."));
+        when(eventPublisher.publish(anyString(), eq(willSucceed.getCorrelationId().toString()), anyString()))
+                .thenReturn(fakeMetadata());
+
+        publisher.publishPendingEvents();
+
+        assertThat(willFail.isSent()).isFalse();
+        assertThat(willFail.getAttemptCount()).isEqualTo(1);
+        assertThat(willFail.getLastError()).contains("not present in metadata");
+        // The real assertion: the row AFTER the failing one still got processed.
+        assertThat(willSucceed.isSent()).isTrue();
+    }
+
+    @Test
     void asksForNoMoreThanTheConfiguredBatchSize() {
         OutboxPublisher smallBatchPublisher = new OutboxPublisher(repository, eventPublisher, 7);
         when(repository.findBySentFalseOrderByCreatedAtAsc(any(Pageable.class))).thenReturn(List.of());

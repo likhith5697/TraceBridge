@@ -4,8 +4,6 @@ import com.tracebridge.service_request_api.entity.OutboxEvent;
 import com.tracebridge.service_request_api.repository.OutboxEventRepository;
 import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -60,7 +58,17 @@ public class OutboxPublisher {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             recordFailure(event, e.getMessage());
-        } catch (ExecutionException | TimeoutException e) {
+        } catch (Exception e) {
+            // Deliberately broad, not just ExecutionException/TimeoutException:
+            // found live that Kafka's own client can throw an UNCHECKED
+            // org.apache.kafka.common.errors.TimeoutException directly out of
+            // send() itself (when it can't fetch topic metadata in time) -
+            // a completely different class from java.util.concurrent.TimeoutException,
+            // and easy to miss since both are named "TimeoutException". A
+            // narrower catch here let it escape into Spring's scheduler, which
+            // silently swallows it via its default error handler AND aborts
+            // every remaining row in that poll cycle's batch - exactly the kind
+            // of silent, batch-wide failure this whole pattern exists to avoid.
             recordFailure(event, e.getMessage());
         } finally {
             MDC.clear();
