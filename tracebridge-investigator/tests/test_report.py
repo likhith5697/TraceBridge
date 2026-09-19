@@ -206,6 +206,7 @@ def test_render_report_shows_failure_mark_and_boundary_for_401():
     checkpoints = [
         ("service-request-api", "SERVICE_REQUEST_RECEIVED"),
         ("service-request-api", "DATABASE_PERSISTED"),
+        ("service-request-api", "OUTBOX_EVENT_QUEUED"),
         ("service-request-api", "KAFKA_PUBLISH_STARTED"),
         ("service-request-api", "KAFKA_PUBLISHED"),
         ("servicenow-consumer", "KAFKA_CONSUMED"),
@@ -242,6 +243,7 @@ def test_render_report_shows_failure_mark_and_boundary_for_customer_db_consumer(
     checkpoints = [
         ("service-request-api", "SERVICE_REQUEST_RECEIVED"),
         ("service-request-api", "DATABASE_PERSISTED"),
+        ("service-request-api", "OUTBOX_EVENT_QUEUED"),
         ("service-request-api", "KAFKA_PUBLISH_STARTED"),
         ("service-request-api", "KAFKA_PUBLISHED"),
         ("servicenow-consumer", "KAFKA_CONSUMED"),

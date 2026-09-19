@@ -30,6 +30,11 @@ class Stage:
 STAGES: tuple[Stage, ...] = (
     Stage("service-request-api", ("SERVICE_REQUEST_RECEIVED",), "request received"),
     Stage("service-request-api", ("DATABASE_PERSISTED",), "database persisted"),
+    # Outbox pattern: this and the DB row above commit in one transaction,
+    # so this checkpoint is now the true "durably safe to lose the process"
+    # point - the actual Kafka publish below happens later, on the
+    # OutboxPublisher poller's own schedule, not inline with the request.
+    Stage("service-request-api", ("OUTBOX_EVENT_QUEUED",), "outbox event queued"),
     Stage("service-request-api", ("KAFKA_PUBLISH_STARTED",), "Kafka publish attempted"),
     Stage("service-request-api", ("KAFKA_PUBLISHED",), "Kafka published", external_system="Kafka"),
     Stage("servicenow-consumer", ("KAFKA_CONSUMED",), "Kafka consumed"),

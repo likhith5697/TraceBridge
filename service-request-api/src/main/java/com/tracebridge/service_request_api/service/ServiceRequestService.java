@@ -4,8 +4,8 @@ import com.tracebridge.service_request_api.dto.ServiceRequestCreateRequest;
 import com.tracebridge.service_request_api.dto.ServiceRequestResponse;
 import com.tracebridge.service_request_api.entity.RequestStatus;
 import com.tracebridge.service_request_api.entity.ServiceRequest;
+import com.tracebridge.service_request_api.event.OutboxEventService;
 import com.tracebridge.service_request_api.event.ServiceRequestCreatedEvent;
-import com.tracebridge.service_request_api.event.ServiceRequestEventPublisher;
 import com.tracebridge.service_request_api.repository.ServiceRequestRepository;
 import java.time.Instant;
 import java.util.UUID;
@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ServiceRequestService {
@@ -20,13 +21,18 @@ public class ServiceRequestService {
     private static final Logger log = LoggerFactory.getLogger(ServiceRequestService.class);
 
     private final ServiceRequestRepository repository;
-    private final ServiceRequestEventPublisher eventPublisher;
+    private final OutboxEventService outboxEventService;
 
-    public ServiceRequestService(ServiceRequestRepository repository, ServiceRequestEventPublisher eventPublisher) {
+    public ServiceRequestService(ServiceRequestRepository repository, OutboxEventService outboxEventService) {
         this.repository = repository;
-        this.eventPublisher = eventPublisher;
+        this.outboxEventService = outboxEventService;
     }
 
+    // Both saves below (the business row and the outbox row) must commit
+    // together or not at all - that atomicity is the entire point of the
+    // outbox pattern, and it only holds because this whole method runs in
+    // one transaction. See OutboxEventService/OutboxPublisher for the rest.
+    @Transactional
     public ServiceRequestResponse createServiceRequest(ServiceRequestCreateRequest request) {
         UUID correlationId = UUID.randomUUID();
         MDC.put("correlationId", correlationId.toString());
@@ -44,9 +50,6 @@ public class ServiceRequestService {
                     request.priority(),
                     RequestStatus.RECEIVED);
 
-            // Spring Data JPA wraps this single save() in its own transaction and commits
-            // before this method continues - the Kafka publish below happens strictly after
-            // the row is durably persisted.
             repository.save(serviceRequest);
             log.atInfo().addKeyValue("event", "DATABASE_PERSISTED").log("Service request persisted to database");
 
@@ -66,7 +69,7 @@ public class ServiceRequestService {
                             request.priority()));
 
             MDC.put("eventId", event.eventId().toString());
-            eventPublisher.publish(event);
+            outboxEventService.enqueue(event);
 
             return new ServiceRequestResponse(correlationId, RequestStatus.RECEIVED);
         } finally {

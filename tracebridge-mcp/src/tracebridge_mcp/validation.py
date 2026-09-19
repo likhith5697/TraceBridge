@@ -34,6 +34,7 @@ KNOWN_EVENTS = frozenset(
         # service-request-api
         "SERVICE_REQUEST_RECEIVED",
         "DATABASE_PERSISTED",
+        "OUTBOX_EVENT_QUEUED",
         "KAFKA_PUBLISH_STARTED",
         "KAFKA_PUBLISHED",
         "KAFKA_PUBLISH_FAILED",

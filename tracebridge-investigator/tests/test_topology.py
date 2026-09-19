@@ -8,6 +8,7 @@ from tracebridge_investigator.topology import (
 _HAPPY_PATH_UP_TO_KAFKA_PUBLISHED = {
     ("service-request-api", "SERVICE_REQUEST_RECEIVED"),
     ("service-request-api", "DATABASE_PERSISTED"),
+    ("service-request-api", "OUTBOX_EVENT_QUEUED"),
     ("service-request-api", "KAFKA_PUBLISH_STARTED"),
 }
 
@@ -63,6 +64,25 @@ def test_partial_evidence_reports_kafka_publish_gap():
     assert gap is not None
     assert gap.stage.label == "Kafka published"
     assert failure_boundary_description(results) == "service-request-api -> Kafka"
+
+
+def test_outbox_queued_but_not_yet_published_is_a_gap_not_a_failure():
+    """A perfectly normal, expected transient state under the outbox
+    pattern: the row committed with the business write, but the poller
+    hasn't run yet. This must show as "not yet reached", never as a
+    failure - there's nothing wrong here."""
+    results = compute_observed_stages(
+        {
+            ("service-request-api", "SERVICE_REQUEST_RECEIVED"),
+            ("service-request-api", "DATABASE_PERSISTED"),
+            ("service-request-api", "OUTBOX_EVENT_QUEUED"),
+        }
+    )
+
+    gap = first_gap(results)
+    assert gap is not None
+    assert gap.stage.label == "Kafka publish attempted"
+    assert not any(is_failure_result(r) for r in results)
 
 
 def test_no_evidence_at_all_has_a_gap_but_no_boundary():

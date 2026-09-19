@@ -10,7 +10,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.tracebridge.service_request_api.dto.ServiceRequestCreateRequest;
 import com.tracebridge.service_request_api.dto.ServiceRequestResponse;
 import com.tracebridge.service_request_api.entity.Priority;
-import com.tracebridge.service_request_api.event.ServiceRequestEventPublisher;
+import com.tracebridge.service_request_api.event.OutboxEventService;
 import com.tracebridge.service_request_api.repository.ServiceRequestRepository;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
@@ -24,8 +24,8 @@ import org.slf4j.MDC;
 class ServiceRequestServiceLoggingTest {
 
     private final ServiceRequestRepository repository = mock(ServiceRequestRepository.class);
-    private final ServiceRequestEventPublisher eventPublisher = mock(ServiceRequestEventPublisher.class);
-    private final ServiceRequestService service = new ServiceRequestService(repository, eventPublisher);
+    private final OutboxEventService outboxEventService = mock(OutboxEventService.class);
+    private final ServiceRequestService service = new ServiceRequestService(repository, outboxEventService);
 
     private Logger rootLogger;
     private ListAppender<ILoggingEvent> appender;

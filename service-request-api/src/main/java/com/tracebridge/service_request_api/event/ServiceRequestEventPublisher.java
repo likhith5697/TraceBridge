@@ -8,66 +8,46 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Component;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.ObjectMapper;
 
+// The only place this service talks to Kafka. Deliberately dumb: it sends
+// one already-serialized payload and either returns real proof of delivery
+// (a partition + offset) or throws - it never decides what a failure means,
+// that is OutboxPublisher's job (retry later). This class used to be called
+// directly from the request-handling path and silently swallowed failures;
+// it no longer catches anything, on purpose - see OutboxPublisher.
 @Component
 public class ServiceRequestEventPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(ServiceRequestEventPublisher.class);
     private static final String CORRELATION_ID_HEADER = "X-Correlation-Id";
+    private static final long SEND_TIMEOUT_SECONDS = 5;
 
     private final KafkaTemplate<String, String> kafkaTemplate;
-    private final ObjectMapper objectMapper;
-    private final String topic;
 
-    public ServiceRequestEventPublisher(
-            KafkaTemplate<String, String> kafkaTemplate,
-            ObjectMapper objectMapper,
-            @Value("${tracebridge.kafka.topic.service-request-created}") String topic) {
+    public ServiceRequestEventPublisher(KafkaTemplate<String, String> kafkaTemplate) {
         this.kafkaTemplate = kafkaTemplate;
-        this.objectMapper = objectMapper;
-        this.topic = topic;
     }
 
-    public void publish(ServiceRequestCreatedEvent event) {
-        String correlationId = event.correlationId().toString();
-
+    public RecordMetadata publish(String topic, String correlationId, String payload)
+            throws InterruptedException, ExecutionException, TimeoutException {
         log.atInfo().addKeyValue("event", "KAFKA_PUBLISH_STARTED").log("Sending event to Kafka");
 
         long start = System.currentTimeMillis();
-        try {
-            String payload = objectMapper.writeValueAsString(event);
+        ProducerRecord<String, String> record = new ProducerRecord<>(topic, correlationId, payload);
+        record.headers().add(CORRELATION_ID_HEADER, correlationId.getBytes(StandardCharsets.UTF_8));
 
-            ProducerRecord<String, String> record = new ProducerRecord<>(topic, correlationId, payload);
-            record.headers().add(CORRELATION_ID_HEADER, correlationId.getBytes(StandardCharsets.UTF_8));
-
-            SendResult<String, String> result = kafkaTemplate.send(record).get(5, TimeUnit.SECONDS);
-            RecordMetadata metadata = result.getRecordMetadata();
-            long durationMs = System.currentTimeMillis() - start;
-
-            log.atInfo()
-                    .addKeyValue("event", "KAFKA_PUBLISHED")
-                    .addKeyValue("durationMs", durationMs)
-                    .log("Published event to Kafka (partition={}, offset={})", metadata.partition(), metadata.offset());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            logPublishFailure(start, e.getMessage());
-        } catch (ExecutionException | TimeoutException | JacksonException e) {
-            logPublishFailure(start, e.getMessage());
-        }
-    }
-
-    private void logPublishFailure(long start, String reason) {
+        SendResult<String, String> result = kafkaTemplate.send(record).get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        RecordMetadata metadata = result.getRecordMetadata();
         long durationMs = System.currentTimeMillis() - start;
-        log.atError()
-                .addKeyValue("event", "KAFKA_PUBLISH_FAILED")
-                .addKeyValue("errorMessage", reason)
+
+        log.atInfo()
+                .addKeyValue("event", "KAFKA_PUBLISHED")
                 .addKeyValue("durationMs", durationMs)
-                .log("Failed to publish event to Kafka");
+                .log("Published event to Kafka (partition={}, offset={})", metadata.partition(), metadata.offset());
+
+        return metadata;
     }
 }
