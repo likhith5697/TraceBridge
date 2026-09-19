@@ -356,3 +356,43 @@ performed against this same correlation ID stopped after round 1 and
 reached the wrong conclusion (SUCCESS) — a real, useful finding about when
 the model settles for too little evidence, not a flaw in the flow shown
 above.*
+
+## 12. Why one summary call isn't enough — what each step actually knows
+
+Easy to assume `get_transaction_summary` already tells you everything,
+since a correlation ID ties every service's logs together. It doesn't -
+here's exactly what each step in the loop actually knows, and doesn't:
+
+**Step 1 — `get_transaction_summary`.** Gives a rough *shape* only: which
+services were touched (`servicesObserved`, just a name list), how many
+events happened in total (`eventsObserved`, just a count), and ServiceNow's
+own outcome if there is one (`downstreamInteractions`, from its dedicated
+Postgres table). It does **not** return the actual log lines, and it does
+**not** point at where a problem is — it has no visibility into what any
+consumer specifically logged. This is the tool the real bug in section 11
+came from: the model saw `customer-db-consumer` in the service list and
+`eventsObserved: 35`, and stopped there.
+
+**Step 2 — the model decides, on its own, whether that's enough.** Nothing
+in the code tells it "keep going" or "stop here" for a given case - that
+judgment call is entirely the model's, guided only by the system prompt's
+general instruction not to conclude more than the evidence shows.
+
+**Step 3 — if it digs further, `search_logs` / `get_transaction_timeline`
+are what actually show content**: individual checkpoint names, error
+codes, error messages, for one specific service. This is the only way to
+see something like `DB_OPERATION_FAILED` at all - it never appears in the
+summary.
+
+**Step 4 — only then can it state something concrete**, e.g. "ServiceNow
+succeeded, but customer-db-consumer failed with a connection error" - and
+if it wants to know *why*, that's when the Phase 8 tools
+(`get_dependency_health`, `get_service_runtime_status`) come in, to check
+the dependency and the container directly rather than just trusting a log
+line.
+
+The one-line summary: **correlation ID ties the evidence together;
+`get_transaction_summary` only tells you *who was involved*, never *what
+they actually did*. Finding out what happened is the model's active choice
+to dig deeper - and it can choose not to, which is exactly what section
+11's real run shows.**
