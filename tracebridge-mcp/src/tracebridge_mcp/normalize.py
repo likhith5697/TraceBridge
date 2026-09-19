@@ -43,6 +43,7 @@ def normalize_timeline_event(source: dict[str, Any]) -> dict[str, Any]:
 def normalize_downstream_interaction(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "correlationId": str(row.get("correlation_id")) if row.get("correlation_id") else None,
+        "eventId": str(row.get("event_id")) if row.get("event_id") else None,
         "targetSystem": row.get("target_system"),
         "operation": row.get("operation"),
         "httpMethod": row.get("http_method"),

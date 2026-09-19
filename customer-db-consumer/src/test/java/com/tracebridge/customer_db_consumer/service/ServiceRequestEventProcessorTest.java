@@ -3,6 +3,7 @@ package com.tracebridge.customer_db_consumer.service;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.tracebridge.customer_db_consumer.validation.CorrelationValidator;
 import com.tracebridge.customer_db_consumer.validation.EventValidator;
@@ -61,6 +62,16 @@ class ServiceRequestEventProcessorTest {
         processor().process(validEventJson(correlationId), correlationId.toString());
 
         verify(customerRecordService).persist(any());
+    }
+
+    @Test
+    void skips_the_write_when_event_was_already_processed() {
+        UUID correlationId = UUID.randomUUID();
+        when(customerRecordService.alreadyProcessed(any())).thenReturn(true);
+
+        processor().process(validEventJson(correlationId), correlationId.toString());
+
+        verify(customerRecordService, never()).persist(any());
     }
 
     @Test

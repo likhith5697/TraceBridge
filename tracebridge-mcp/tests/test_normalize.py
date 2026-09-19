@@ -79,6 +79,7 @@ def test_normalize_timeline_event_includes_present_optional_fields():
 def test_normalize_downstream_interaction_maps_snake_case_to_camel_case():
     row = {
         "correlation_id": "06fc3488-bc83-47a4-a768-db3af8b5c161",
+        "event_id": "4332df07-40d8-4238-b3a4-d39866705983",
         "target_system": "SERVICENOW",
         "operation": "CREATE_INCIDENT",
         "http_method": "POST",
@@ -97,6 +98,7 @@ def test_normalize_downstream_interaction_maps_snake_case_to_camel_case():
     result = normalize_downstream_interaction(row)
 
     assert result["correlationId"] == "06fc3488-bc83-47a4-a768-db3af8b5c161"
+    assert result["eventId"] == "4332df07-40d8-4238-b3a4-d39866705983"
     assert result["httpStatus"] == 401
     assert result["errorCode"] == "UNAUTHORIZED"
     assert result["attemptNumber"] == 1

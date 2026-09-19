@@ -95,6 +95,17 @@ container even running?) until it has enough evidence to explain what
 happened. It never claims more than the evidence shows, and every claim
 in its final report is tied back to a specific tool result.
 
+## Reliability: no duplicate side effects on redelivery
+
+Kafka only guarantees a message is delivered *at least* once, not exactly
+once. Both consumers guard against this: each event carries a unique
+`eventId`, and before doing any real work (calling ServiceNow, writing to
+the database) they check whether that `eventId` has already been handled.
+A database-level unique constraint backs this up as the real safety net.
+Verified live: forcing a real Kafka redelivery produced zero duplicate
+ServiceNow incidents and zero duplicate database rows. See
+[`PIPELINE_MAP.md`](PIPELINE_MAP.md) for the full walkthrough.
+
 ## The tools it can call (`tracebridge-mcp`)
 
 One MCP server, ten read-only tools — six read transaction evidence

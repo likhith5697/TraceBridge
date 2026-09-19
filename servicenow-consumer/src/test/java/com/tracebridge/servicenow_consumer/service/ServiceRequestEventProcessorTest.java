@@ -73,7 +73,18 @@ class ServiceRequestEventProcessorTest {
 
         verify(serviceNowClient).createIncident(any(), eq(correlationId.toString()));
         verify(downstreamInteractionService)
-                .record(eq(correlationId), anyString(), any(), any(), any(Instant.class));
+                .record(eq(correlationId), any(), anyString(), any(), any(), any(Instant.class));
+    }
+
+    @Test
+    void skipsServiceNowWhenEventWasAlreadyProcessed() {
+        UUID correlationId = UUID.randomUUID();
+        when(downstreamInteractionService.alreadyProcessed(any())).thenReturn(true);
+
+        processor.process(eventJson(correlationId), correlationId.toString());
+
+        verify(serviceNowClient, never()).createIncident(any(), anyString());
+        verify(downstreamInteractionService, never()).record(any(), any(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -84,7 +95,7 @@ class ServiceRequestEventProcessorTest {
         processor.process(eventJson(bodyCorrelationId), headerCorrelationId.toString());
 
         verify(serviceNowClient, never()).createIncident(any(), anyString());
-        verify(downstreamInteractionService, never()).record(any(), anyString(), any(), any(), any());
+        verify(downstreamInteractionService, never()).record(any(), any(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -95,7 +106,7 @@ class ServiceRequestEventProcessorTest {
         processor.process(json, correlationId.toString());
 
         verify(serviceNowClient, never()).createIncident(any(), anyString());
-        verify(downstreamInteractionService, never()).record(any(), anyString(), any(), any(), any());
+        verify(downstreamInteractionService, never()).record(any(), any(), anyString(), any(), any(), any());
     }
 
     @Test

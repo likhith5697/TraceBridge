@@ -4,13 +4,13 @@ import com.tracebridge.servicenow_consumer.entity.DownstreamInteraction;
 import com.tracebridge.servicenow_consumer.entity.DownstreamInteractionStatus;
 import com.tracebridge.servicenow_consumer.repository.DownstreamInteractionRepository;
 import com.tracebridge.servicenow_consumer.servicenow.PayloadSanitizer;
-import com.tracebridge.servicenow_consumer.servicenow.ServiceNowClient;
 import com.tracebridge.servicenow_consumer.servicenow.ServiceNowIncidentRequest;
 import com.tracebridge.servicenow_consumer.servicenow.ServiceNowResult;
 import java.time.Instant;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 
@@ -33,8 +33,17 @@ public class DownstreamInteractionService {
         this.objectMapper = objectMapper;
     }
 
+    // The idempotency check: called BEFORE the ServiceNow request is made, so
+    // a Kafka redelivery of the same event never triggers a second real call
+    // in the first place - this is the check that actually avoids the
+    // duplicate external side effect, not just a duplicate audit row.
+    public boolean alreadyProcessed(UUID eventId) {
+        return eventId != null && repository.existsByEventId(eventId);
+    }
+
     public void record(
             UUID correlationId,
+            UUID eventId,
             String endpoint,
             ServiceNowIncidentRequest requestBody,
             ServiceNowResult result,
@@ -44,6 +53,7 @@ public class DownstreamInteractionService {
 
         DownstreamInteraction interaction = new DownstreamInteraction(
                 correlationId,
+                eventId,
                 TARGET_SYSTEM,
                 OPERATION,
                 "POST",
@@ -59,7 +69,21 @@ public class DownstreamInteractionService {
                 result.durationMs(),
                 FIRST_ATTEMPT);
 
-        repository.save(interaction);
+        try {
+            repository.save(interaction);
+        } catch (DataIntegrityViolationException e) {
+            // Belt-and-suspenders: the alreadyProcessed() check above closes
+            // this window for the normal case, but a genuine race (two
+            // threads processing the same eventId at once) is only ever
+            // prevented for certain by the database's own unique constraint.
+            // By the time we're here the ServiceNow call already happened -
+            // this only stops a duplicate audit row, logged, not thrown.
+            log.atWarn()
+                    .addKeyValue("event", "DUPLICATE_EVENT_DETECTED_ON_INSERT")
+                    .addKeyValue("targetSystem", TARGET_SYSTEM)
+                    .log("A downstream_interaction row for this eventId already exists - discarding the duplicate insert");
+            return;
+        }
 
         log.atInfo()
                 .addKeyValue("event", "DOWNSTREAM_INTERACTION_PERSISTED")

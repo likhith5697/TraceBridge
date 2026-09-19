@@ -1,5 +1,6 @@
 package com.tracebridge.customer_db_consumer.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.transaction.CannotCreateTransactionException;
 
@@ -76,6 +78,27 @@ class CustomerRecordServiceTest {
         CustomerRecordService service = new CustomerRecordService(repository);
         when(repository.save(any())).thenThrow(
                 new CannotCreateTransactionException("Could not open JPA EntityManager for transaction"));
+
+        assertThatCode(() -> service.persist(event())).doesNotThrowAnyException();
+    }
+
+    @Test
+    void alreadyProcessedIsTrueOnlyWhenARowExistsForThatEventId() {
+        CustomerRecordService service = new CustomerRecordService(repository);
+        UUID knownEventId = UUID.randomUUID();
+        UUID unknownEventId = UUID.randomUUID();
+        when(repository.existsByEventId(knownEventId)).thenReturn(true);
+        when(repository.existsByEventId(unknownEventId)).thenReturn(false);
+
+        assertThat(service.alreadyProcessed(knownEventId)).isTrue();
+        assertThat(service.alreadyProcessed(unknownEventId)).isFalse();
+        assertThat(service.alreadyProcessed(null)).isFalse();
+    }
+
+    @Test
+    void aDuplicateInsertRaceIsCaughtAndLoggedNotThrown() {
+        CustomerRecordService service = new CustomerRecordService(repository);
+        when(repository.save(any())).thenThrow(new DataIntegrityViolationException("duplicate key value"));
 
         assertThatCode(() -> service.persist(event())).doesNotThrowAnyException();
     }

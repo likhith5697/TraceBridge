@@ -22,7 +22,7 @@ from psycopg.rows import dict_row
 from tracebridge_mcp.errors import EvidenceSourceUnavailableError
 
 _DOWNSTREAM_INTERACTIONS_SQL = """
-    SELECT correlation_id, target_system, operation, http_method, endpoint,
+    SELECT correlation_id, event_id, target_system, operation, http_method, endpoint,
            request_timestamp, response_timestamp, http_status, status,
            error_code, error_message, duration_ms, attempt_number, created_at
     FROM servicenow_consumer.downstream_interaction

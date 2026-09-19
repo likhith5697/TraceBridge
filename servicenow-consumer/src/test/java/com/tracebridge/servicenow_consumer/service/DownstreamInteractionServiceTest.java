@@ -1,6 +1,7 @@
 package com.tracebridge.servicenow_consumer.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -16,6 +17,7 @@ import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DataIntegrityViolationException;
 import tools.jackson.databind.ObjectMapper;
 
 class DownstreamInteractionServiceTest {
@@ -29,17 +31,19 @@ class DownstreamInteractionServiceTest {
     @Test
     void persistsSuccessfulInteraction() {
         UUID correlationId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
         ServiceNowIncidentRequest request = new ServiceNowIncidentRequest("short", "full", "1", "1", "network");
         ServiceNowResult result = ServiceNowResult.success(201, "abc123", "INC0012345", "{\"result\":{}}", 150);
         when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-        service.record(correlationId, "/api/now/table/incident", request, result, Instant.now());
+        service.record(correlationId, eventId, "/api/now/table/incident", request, result, Instant.now());
 
         ArgumentCaptor<DownstreamInteraction> captor = ArgumentCaptor.forClass(DownstreamInteraction.class);
         verify(repository).save(captor.capture());
         DownstreamInteraction saved = captor.getValue();
 
         assertThat(saved.getCorrelationId()).isEqualTo(correlationId);
+        assertThat(saved.getEventId()).isEqualTo(eventId);
         assertThat(saved.getTargetSystem()).isEqualTo("SERVICENOW");
         assertThat(saved.getOperation()).isEqualTo("CREATE_INCIDENT");
         assertThat(saved.getStatus()).isEqualTo(DownstreamInteractionStatus.SUCCESS);
@@ -55,7 +59,7 @@ class DownstreamInteractionServiceTest {
         ServiceNowResult result = ServiceNowResult.failure(null, "TIMEOUT", "read timed out", null, 5000);
         when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-        service.record(correlationId, "/api/now/table/incident", request, result, Instant.now());
+        service.record(correlationId, UUID.randomUUID(), "/api/now/table/incident", request, result, Instant.now());
 
         ArgumentCaptor<DownstreamInteraction> captor = ArgumentCaptor.forClass(DownstreamInteraction.class);
         verify(repository).save(captor.capture());
@@ -75,7 +79,7 @@ class DownstreamInteractionServiceTest {
         ServiceNowResult result = ServiceNowResult.success(201, "abc", "INC001", responseWithSecret, 100);
         when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-        service.record(correlationId, "/api/now/table/incident", request, result, Instant.now());
+        service.record(correlationId, UUID.randomUUID(), "/api/now/table/incident", request, result, Instant.now());
 
         ArgumentCaptor<DownstreamInteraction> captor = ArgumentCaptor.forClass(DownstreamInteraction.class);
         verify(repository).save(captor.capture());
@@ -83,5 +87,29 @@ class DownstreamInteractionServiceTest {
 
         assertThat(saved.getResponsePayload()).doesNotContain("Basic xyz");
         assertThat(saved.getResponsePayload()).contains("[REDACTED]");
+    }
+
+    @Test
+    void alreadyProcessedIsTrueOnlyWhenARowExistsForThatEventId() {
+        UUID knownEventId = UUID.randomUUID();
+        UUID unknownEventId = UUID.randomUUID();
+        when(repository.existsByEventId(knownEventId)).thenReturn(true);
+        when(repository.existsByEventId(unknownEventId)).thenReturn(false);
+
+        assertThat(service.alreadyProcessed(knownEventId)).isTrue();
+        assertThat(service.alreadyProcessed(unknownEventId)).isFalse();
+        assertThat(service.alreadyProcessed(null)).isFalse();
+    }
+
+    @Test
+    void aDuplicateInsertRaceIsCaughtAndLoggedNotThrown() {
+        UUID correlationId = UUID.randomUUID();
+        ServiceNowIncidentRequest request = new ServiceNowIncidentRequest("short", "full", "1", "1", "network");
+        ServiceNowResult result = ServiceNowResult.success(201, "abc", "INC001", "{\"result\":{}}", 100);
+        when(repository.save(any())).thenThrow(new DataIntegrityViolationException("duplicate key value"));
+
+        assertThatCode(() ->
+                        service.record(correlationId, UUID.randomUUID(), "/api/now/table/incident", request, result, Instant.now()))
+                .doesNotThrowAnyException();
     }
 }

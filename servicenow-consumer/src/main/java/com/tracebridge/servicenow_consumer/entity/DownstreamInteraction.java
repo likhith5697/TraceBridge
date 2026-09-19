@@ -31,6 +31,11 @@ public class DownstreamInteraction {
     @Column(name = "correlation_id", nullable = false)
     private UUID correlationId;
 
+    // Idempotency key: unique per event, stable across Kafka redeliveries -
+    // see V2__add_event_id_for_idempotency.sql for why.
+    @Column(name = "event_id")
+    private UUID eventId;
+
     @Column(name = "target_system", nullable = false, length = 50)
     private String targetSystem;
 
@@ -82,6 +87,7 @@ public class DownstreamInteraction {
 
     public DownstreamInteraction(
             UUID correlationId,
+            UUID eventId,
             String targetSystem,
             String operation,
             String httpMethod,
@@ -97,6 +103,7 @@ public class DownstreamInteraction {
             long durationMs,
             int attemptNumber) {
         this.correlationId = correlationId;
+        this.eventId = eventId;
         this.targetSystem = targetSystem;
         this.operation = operation;
         this.httpMethod = httpMethod;

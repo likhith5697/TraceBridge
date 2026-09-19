@@ -102,6 +102,18 @@ public class ServiceRequestEventProcessor {
             return;
         }
 
+        // Idempotency guard: Kafka only promises at-least-once delivery. If this
+        // event already produced a customer_record row (a redelivery after a
+        // crash before offset commit, a rebalance, or a manual offset reset),
+        // stop here rather than writing a duplicate row.
+        if (customerRecordService.alreadyProcessed(event.eventId())) {
+            log.atWarn()
+                    .addKeyValue("event", "DUPLICATE_EVENT_SKIPPED")
+                    .addKeyValue("targetSystem", "CUSTOMER_POSTGRES")
+                    .log("eventId already has a persisted customer record - skipping duplicate delivery");
+            return;
+        }
+
         log.atInfo().addKeyValue("event", "PAYLOAD_TRANSFORMED").log("Mapped event to customer record");
 
         customerRecordService.persist(event);

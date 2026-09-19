@@ -32,6 +32,11 @@ public class CustomerRecord {
     @Column(name = "correlation_id", nullable = false)
     private UUID correlationId;
 
+    // Idempotency key: unique per event, stable across Kafka redeliveries -
+    // see V2__add_event_id_for_idempotency.sql for why.
+    @Column(name = "event_id")
+    private UUID eventId;
+
     @Column(name = "customer_id", nullable = false, length = 100)
     private String customerId;
 
@@ -52,9 +57,10 @@ public class CustomerRecord {
     private Instant createdAt;
 
     public CustomerRecord(
-            UUID correlationId, String customerId, String category, String subcategory,
+            UUID correlationId, UUID eventId, String customerId, String category, String subcategory,
             String shortDescription, String priority) {
         this.correlationId = correlationId;
+        this.eventId = eventId;
         this.customerId = customerId;
         this.category = category;
         this.subcategory = subcategory;

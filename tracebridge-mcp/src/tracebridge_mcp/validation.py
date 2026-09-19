@@ -48,6 +48,11 @@ KNOWN_EVENTS = frozenset(
         "EVENT_VALIDATION_FAILED",
         "PAYLOAD_TRANSFORMED",
         "EVENT_PROCESSING_COMPLETED",
+        # idempotency guard - shared by both consumers (see each service's
+        # V2__add_event_id_for_idempotency.sql): a redelivered Kafka message
+        # is detected and skipped before it can repeat a downstream side effect
+        "DUPLICATE_EVENT_SKIPPED",
+        "DUPLICATE_EVENT_DETECTED_ON_INSERT",
         # servicenow-consumer
         "DOWNSTREAM_REQUEST_STARTED",
         "DOWNSTREAM_RESPONSE_RECEIVED",

@@ -115,6 +115,18 @@ public class ServiceRequestEventProcessor {
             return;
         }
 
+        // Idempotency guard: Kafka only promises at-least-once delivery. If this
+        // exact event was already processed (a redelivery after a crash before
+        // offset commit, a rebalance, or a manual offset reset), stop here -
+        // before calling ServiceNow again and creating a duplicate incident.
+        if (downstreamInteractionService.alreadyProcessed(event.eventId())) {
+            log.atWarn()
+                    .addKeyValue("event", "DUPLICATE_EVENT_SKIPPED")
+                    .addKeyValue("targetSystem", "SERVICENOW")
+                    .log("eventId already has a recorded downstream interaction - skipping duplicate delivery");
+            return;
+        }
+
         ServiceNowIncidentRequest incidentRequest = incidentMapper.toIncidentRequest(event);
         log.atInfo().addKeyValue("event", "PAYLOAD_TRANSFORMED").log("Mapped event to ServiceNow incident request");
 
@@ -146,7 +158,12 @@ public class ServiceRequestEventProcessor {
         }
 
         downstreamInteractionService.record(
-                event.correlationId(), serviceNowClient.endpoint(), incidentRequest, result, requestTimestamp);
+                event.correlationId(),
+                event.eventId(),
+                serviceNowClient.endpoint(),
+                incidentRequest,
+                result,
+                requestTimestamp);
 
         long totalDurationMs = System.currentTimeMillis() - start;
         log.atInfo()

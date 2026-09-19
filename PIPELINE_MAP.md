@@ -151,6 +151,42 @@ evidence proves" rule.
 - **Secret safety**: `get_service_config_metadata` never performs I/O at
   all — it returns a hardcoded dict, so no real credential can ever pass
   through it.
+- **Idempotency**: Kafka only promises *at-least-once* delivery — a crash
+  right before an offset commits, a rebalance, or a manual offset reset can
+  redeliver the same message. Without a guard, that would call the real
+  ServiceNow API a second time (a genuine duplicate incident) or write a
+  second `customer_record` row. Both consumers now check "have I already
+  processed this exact event?" (by `eventId`, a UUID generated once per
+  event and never reused) *before* doing the real work — see each
+  service's `V2__add_event_id_for_idempotency.sql`. A unique database
+  index is the actual safety net (race-safe, enforced by Postgres itself);
+  the check beforehand is what avoids the duplicate side effect in the
+  normal case, not just a duplicate row. Verified live: stopped both
+  consumers, rewound their Kafka offset by one, restarted them, and
+  confirmed the redelivered message was logged as
+  `DUPLICATE_EVENT_SKIPPED` and produced no second ServiceNow incident and
+  no second database row.
+
+  **Concretely, no new table — one new column on each existing table,**
+  plus a uniqueness rule Postgres itself enforces:
+  ```sql
+  ALTER TABLE downstream_interaction ADD COLUMN event_id UUID;
+  CREATE UNIQUE INDEX uq_downstream_interaction_event_id ON downstream_interaction (event_id);
+  ```
+  Real data from the live test above — one row, before and after the
+  forced redelivery (not two):
+  | correlation_id | event_id | http_status | status |
+  |---|---|---|---|
+  | `00ab2d24-...` | `05664fb2-7537-...` | 201 | SUCCESS |
+
+  What each consumer does on every message, before touching ServiceNow or
+  the database:
+  ```
+  1. Read the event -> eventId = 05664fb2-...
+  2. Ask the table: does a row already exist with this event_id?
+  3a. No  -> proceed normally (call ServiceNow / write the row)
+  3b. Yes -> log DUPLICATE_EVENT_SKIPPED, stop here, touch nothing
+  ```
 
 ## 8. API routes
 
