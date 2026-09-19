@@ -1,0 +1,16 @@
+# Only used when a service's build context is the repo root (currently just
+# tracebridge-investigator, which needs to COPY both its own source and a
+# sibling copy of tracebridge-mcp into one image). Every other service
+# builds with its own directory as context and has its own .dockerignore.
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.egg-info
+**/node_modules
+**/dist
+**/logs
+**/.env
+**/.env.local
+**/target
+.git

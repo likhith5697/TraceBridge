@@ -1,0 +1,229 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tracebridge-postgres
+    environment:
+      POSTGRES_DB: tracebridge
+      POSTGRES_USER: tracebridge
+      POSTGRES_PASSWORD: tracebridge
+    ports:
+      - "5432:5432"
+    volumes:
+      - tracebridge-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracebridge -d tracebridge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: tracebridge-kafka
+    ports:
+      - "9094:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CLUSTER_ID: KPvBDCIYTTuthJChvRuhVA
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - tracebridge-kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  service-request-api:
+    build: ./service-request-api
+    container_name: tracebridge-service-request-api
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/tracebridge
+      DB_USERNAME: tracebridge
+      DB_PASSWORD: tracebridge
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./service-request-api/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  servicenow-consumer:
+    build: ./servicenow-consumer
+    container_name: tracebridge-servicenow-consumer
+    env_file:
+      - ./servicenow-consumer/.env.local
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/tracebridge
+      DB_USERNAME: tracebridge
+      DB_PASSWORD: tracebridge
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      - ./servicenow-consumer/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  # Phase 8's controlled downstream dependency: a second, independent
+  # Postgres instance that only customer-db-consumer talks to. Stopping this
+  # container (and only this one) is how Phase 8's runtime failure demo is
+  # produced - nothing else in this file depends on it.
+  customer-postgres:
+    image: postgres:16-alpine
+    container_name: tracebridge-customer-postgres
+    environment:
+      POSTGRES_DB: customer_db
+      POSTGRES_USER: tracebridge
+      POSTGRES_PASSWORD: tracebridge
+    ports:
+      - "5433:5432"
+    volumes:
+      - tracebridge-customer-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracebridge -d customer_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # customer-db-consumer (Phase 8): a second, independent Kafka consumer of
+  # the same service-request-created topic as servicenow-consumer, writing to
+  # its own Postgres. It exists to give the investigator a second, genuinely
+  # different failure mode to diagnose (a downstream database dependency
+  # going unavailable) alongside the existing HTTP/ServiceNow failure mode.
+  customer-db-consumer:
+    build: ./customer-db-consumer
+    container_name: tracebridge-customer-db-consumer
+    environment:
+      DB_URL: jdbc:postgresql://customer-postgres:5432/customer_db
+      DB_USERNAME: tracebridge
+      DB_PASSWORD: tracebridge
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      - ./customer-db-consumer/logs:/app/logs
+    depends_on:
+      customer-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  # A minimal, read-only gateway onto the host's Docker socket (Phase 8).
+  # CONTAINERS/EVENTS/INFO/PING are enabled for GET only; POST/PUT/DELETE
+  # are disabled globally by this image regardless of any other setting, so
+  # start/stop/exec/kill/remove are unreachable through this proxy no matter
+  # what a caller sends - see tracebridge-mcp/src/tracebridge_mcp/docker_repository.py.
+  # This is the only container that touches the real docker.sock.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.2
+    container_name: tracebridge-docker-socket-proxy
+    environment:
+      CONTAINERS: 1
+      EVENTS: 1
+      INFO: 1
+      PING: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # Local development only: security plugin disabled (no HTTPS, no auth) so we can query
+  # OpenSearch with plain curl. Never run this configuration outside a developer laptop.
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    container_name: tracebridge-opensearch
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      bootstrap.memory_lock: "false"
+    ports:
+      - "9200:9200"
+    volumes:
+      - tracebridge-opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  fluent-bit:
+    image: fluent/fluent-bit:3.2.5
+    container_name: tracebridge-fluent-bit
+    volumes:
+      - ./fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+      - ./service-request-api/logs:/var/log/service-request-api:ro
+      - ./servicenow-consumer/logs:/var/log/servicenow-consumer:ro
+      - ./customer-db-consumer/logs:/var/log/customer-db-consumer:ro
+      - tracebridge-fluent-bit-db:/var/log/flb-db
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  # The AI investigator (Phase 6). It reaches OpenSearch/PostgreSQL only by
+  # spawning tracebridge-mcp as a stdio subprocess inside this same
+  # container - see tracebridge-investigator/Dockerfile. Nothing else in
+  # this file depends on it: TraceBridge's own transaction processing is
+  # completely unaffected by whether this service is up.
+  tracebridge-investigator-api:
+    build:
+      context: .
+      dockerfile: tracebridge-investigator/Dockerfile
+    container_name: tracebridge-investigator-api
+    env_file:
+      - ./tracebridge-investigator/.env
+    environment:
+      OPENSEARCH_URL: http://opensearch:9200
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: tracebridge
+      POSTGRES_USER: tracebridge
+      POSTGRES_PASSWORD: tracebridge
+      # Phase 8: read-only Docker runtime evidence for tracebridge-mcp,
+      # which runs as a subprocess inside this container and inherits this
+      # environment - see mcp_client.py. Never the host's docker.sock
+      # directly, only through docker-socket-proxy.
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
+
+  # React investigation console (Phase 7). Talks only to
+  # tracebridge-investigator-api - never to MCP, OpenSearch, PostgreSQL, or
+  # an LLM directly.
+  tracebridge-ui:
+    build:
+      context: ./tracebridge-ui
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    container_name: tracebridge-ui
+    ports:
+      - "3000:80"
+    depends_on:
+      - tracebridge-investigator-api
+
+volumes:
+  tracebridge-postgres-data:
+  tracebridge-kafka-data:
+  tracebridge-opensearch-data:
+  tracebridge-fluent-bit-db:
+  tracebridge-customer-postgres-data:
